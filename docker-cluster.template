@@ -1,0 +1,504 @@
+###########################################################################
+# @description - This CloudFormation template creates a Docker Cluster with
+#                 AutoScaling and installs docker engine on all nodes
+# @author - ritesh patel
+# @email - ritesh@line89.com
+# @date - 10/05/2017
+# Note: Template assumes, VPC and Subnets have been created beforehand.
+##########################################################################
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a Docker Cluster, which can be utilized to install Docker Data Center
+Metadata:
+  Stack:
+    Value: '0'
+  VersionDate:
+    Value: '20160510'
+  Identifier:
+    Value: docker-ee-cluster
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      # Application parameters
+      - Label:
+          default: Application Overview
+        Parameters:
+        - pApplicationName
+        - pApplicationIdentifier
+        - pEnvironment
+        - pTagTechnicalContact
+      # Network parameters
+      - Label:
+          default: Network Configurations
+        Parameters:
+        - pVPCTenancy
+        - pDockerVPC
+        - pDockerSubnetAza
+        - pDockerSubnetAzb
+        - pDockerAvailabilityZone
+      # Server configurations parameters
+      - Label:
+          default: Server Instance Configurations
+        Parameters:
+        - pDockerInstanceType
+        - pServerAMI
+        - pKeypair
+        - pEC2InstanceRootVolSize
+      - Label:
+          default: Docker Cluster Size
+        Parameters:
+          - pDockerMinSize
+          - pDockerMaxSize
+          - pDockerDesiredCapacity
+      - Label:
+          default: Server Security Configurations
+        Parameters:
+          - pDockerSecurityGroup
+      # IAM Role parameters
+      - Label:
+          default: IAM Docker Role Configurations
+        Parameters:
+        - pRoleName
+        - pCloudWatchActionsPolicy
+        - pCloudWatchLogsPolicy
+        - pCloudWatchEventsPolicy
+        - pInstanceProfileName
+
+    # Parameter labels to be displayed to the user
+    ParameterLabels:
+      pVPCTenancy:
+        default: Instance tenancy
+      pApplicationName:
+        default: Application name
+      pApplicationIdentifier:
+        default: Application identifier (e.g. docker-ee-cluster)
+      pEnvironment:
+        default: >-
+          The type of environment this application supports (development,
+          staging, production, other).
+      pTagTechnicalContact:
+        default: Technical contact for this template
+      pDockerVPC:
+        default: Target VPC to launch resources into (defaults to Production)
+      pDockerSubnetAza:
+        default: One of the subnets to launch resources into
+      pDockerSubnetAzb:
+        default: One of the subnets to launch resources into
+      pDockerAvailabilityZone:
+        default: Target availability to launch resources into
+      pDockerInstanceType:
+        default: Application server instance type
+      pServerAMI:
+        default: Application server AMI
+      pKeypair:
+        default: EC2 Keypair to attach to the underlying instance for SSH access.
+      pRoleName:
+        default: Role name for IAM instance profile
+      pCloudWatchActionsPolicy:
+        default: Cloud watch actions for EC2 instance
+      pCloudWatchLogsPolicy:
+        default: Cloud watch logs for EC2 instance
+      pCloudWatchEventsPolicy:
+        default: Cloud watch events for EC2 instance
+      pInstanceProfileName:
+        default: IAM Instance Profile name for Docker Cluster
+      pCloudWatchInlinePolicyName:
+        default: CloudWatch Metric Inline Policy Name
+      pDockerSecurityGroup:
+        default: Security group for docker nodes
+      pMDockerMinSize:
+        default: Minimum size of the scaling Group
+      pDockerMaxSize:
+        default: Maximum size of the scaling Group
+      pDockerDesiredCapacity:
+        default: Desired capacity
+      pEC2InstanceRootVolSize:
+        default: Root volume size (defaults to 10G)
+  Input:
+    Description: Optional paramaters for network deployment and database connectivity (VPC, subnet, etc)
+  Output:
+    Description: Outputs IDs and endpoints of all deployed resources
+# Mappings
+Mappings:
+  RegionSupportMap:
+    us-east-1:
+      ConfigRules: true
+      NatGateway: true
+      Glacier: true
+    us-east-2:
+      ConfigRules: true
+      NatGateway: true
+      Glacier: true
+    us-west-1:
+      ConfigRules: true
+      NatGateway: true
+      Glacier: true
+    us-west-2:
+      ConfigRules: true
+      NatGateway: true
+      Glacier: true
+  RegionAMIMap:
+    AMI:
+      AMZNLINUXHVM: RHEL-7.4_HVM_GA-20170808-x86_64-2-Hourly2-GP2
+    us-east-1:
+      AMZNLINUXHVM: ami-c998b6b2
+      InstanceType: t2.medium
+    us-east-2:
+      AMZNLINUXHVM: ami-cfdafaaa
+      InstanceType: t2.medium
+    us-west-1:
+      AMZNLINUXHVM: ami-1fbe067e
+      InstanceType: t2.medium
+    us-west-2:
+      AMZNLINUXHVM: ami-9fa343e7
+      InstanceType: t2.medium
+  RegionARNPartitionMap:
+    aws-standard:
+      ARN: 'arn:aws'
+# Template conditions
+Conditions:
+  cLaunchAsDedicatedInstance:
+    !Equals
+    - !Ref pVPCTenancy
+    - dedicated
+# Parameter definitions with default values (if any)
+Parameters:
+  pVPCTenancy:
+    Description: Instance tenancy behavior for this VPC
+    Type: String
+    Default: default
+    AllowedValues:
+      - default
+      - dedicated
+  pApplicationName:
+    Type: String
+    Default: PRD-Docker-Cluster-AZa
+  pApplicationIdentifier:
+    Type: String
+    Default: docker-ee-cluster
+  pUniqueTimestampHash:
+    Type: String
+    Default: 1234567890
+  pEnvironment:
+    Description: >-
+      The type of environment this application supports (development, staging,
+      production, other).
+    Type: String
+    Default: development
+    AllowedValues:
+      - development
+      - production
+  pTagTechnicalContact:
+    Description: 'Tag for technical contact'
+    Type: String
+    Default: Ritesh Patel
+  pDockerVPC:
+    Description: VPC Target ID
+    Type: 'AWS::EC2::VPC::Id'
+    Default: vpc-84b702fd
+  pDockerSubnetAza:
+    Description: Target subnet to launch Docker Cluster
+    Type: 'AWS::EC2::Subnet::Id'
+    Default: subnet-c5006c8d
+  pDockerSubnetAzb:
+    Description: Target subnet to launch Docker Cluster
+    Type: 'AWS::EC2::Subnet::Id'
+    Default: subnet-b3f1479f
+  pDockerAvailabilityZone:
+    Description: Target availability zone to launch Docker Cluster
+    Type: 'AWS::EC2::AvailabilityZone::Name'
+    Default: us-east-1a
+  pDockerInstanceType:
+    Description: AWS instance type for Docker cluster node
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - m4.medium
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+  pServerAMI:
+    Description: Server AMI to launch the instance from.
+    Type: String
+    Default: ami-c998b6b2
+  pKeypair:
+    Description: EC2 Keypair to attach to the underlying instance for SSH access.
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    MinLength: '1'
+    MaxLength: '64'
+    Default: rap-devops
+  pDockerMinSize:
+    Description: Minimum size of the scaling group
+    Type: String
+    Default: '1'
+  pDockerMaxSize:
+    Description: Maximum size of the scaling group
+    Type: String
+    Default: '8'
+    AllowedValues:
+      - '3'
+      - '5'
+      - '8'
+  pDockerDesiredCapacity:
+    Description: Desired capacity for the auto scaling group
+    Type: String
+    Default: '2'
+  pDockerSecurityGroup:
+    Description: Security group for a docker node
+    Type: String
+    Default: sg-440fc135
+  pRoleName:
+    Description: Role name for the instance profile
+    Type: String
+    Default: prd-docker-cluster-role
+  pCloudWatchInlinePolicyName:
+    Type: String
+    Default: prd-inline-policy-docker-cluster
+  pCloudWatchActionsPolicy:
+    Description: Cloud watch actions for EC2 instance
+    Type: String
+    Default: arn:aws:iam::aws:policy/CloudWatchActionsEC2Access
+  pCloudWatchLogsPolicy:
+    Description: Cloud watch logs for EC2 instance
+    Type: String
+    Default: arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+  pCloudWatchEventsPolicy:
+    Description: Cloud watch events for EC2 instance
+    Type: String
+    Default: arn:aws:iam::aws:policy/CloudWatchEventsFullAccess
+  pInstanceProfileName:
+    Description: IAM Instance Profile name for Docker Cluster
+    Type: String
+    Default: prd-instance-profile-docker-cluster
+  pEC2InstanceRootVolSize:
+    Description: The size of the root volume attached to the EC2 instance
+    Type: String
+    Default: 10
+    AllowedValues:
+      - 10
+      - 25
+      - 50
+      - 100
+Resources:
+  # IAM Role with CloudWatch policies attached
+  rIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref pRoleName
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      Policies:
+      - PolicyName: !Ref pCloudWatchInlinePolicyName
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: 'cloudwatch:PutMetricData'
+              Resource: '*'
+      ManagedPolicyArns:
+      - !Ref pCloudWatchActionsPolicy
+      - !Ref pCloudWatchLogsPolicy
+      - !Ref pCloudWatchEventsPolicy
+  # IAM Instance Profile
+  rIAMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      InstanceProfileName: !Ref pInstanceProfileName
+      Roles:
+      - !Ref pRoleName
+    DependsOn: rIAMRole
+  # Auto Scaling Group for Docker cluster
+  rDockerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: rDockerLaunchConfig
+    Properties:
+      LaunchConfigurationName: !Ref rDockerLaunchConfig
+      MinSize: !Ref pDockerMinSize
+      MaxSize: !Ref pDockerMaxSize
+      DesiredCapacity: !Ref pDockerDesiredCapacity
+      VPCZoneIdentifier:
+      - !Ref pDockerSubnetAza
+      - !Ref pDockerSubnetAzb
+      Tags:
+          - Key: Name
+            Value: docker-ee-cluster-node
+            PropagateAtLaunch: true
+  rDockerLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    DependsOn: rIAMInstanceProfile
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          bootstrap:
+            - install-cfn
+            - security-updates
+            - perl-installation
+            - mount-ebs
+            - cloudwatch-monitoring-init
+            - setup-docker-ee
+            - configure-auto-start
+        install-cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack= ${AWS::StackName}
+                region=${AWS::Region}
+              group: root
+              mode: '000400'
+              owner: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.rDockerLaunchConfig.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource rDockerLaunchConfig --configsets bootstrap --url https://stackbuilder.amazonaws.com
+              group: root
+              mode: '000400'
+              owner: root
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                - /etc/cfn/cfn-hup.conf
+                - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        security-updates:
+          commands:
+            0-write-test-file:
+              command: touch ~/security-updates.txt
+            1-yum-updates:
+              command: sudo yum update --security -y
+        perl-installation:
+          packages:
+            yum:
+              perl-DateTime: []
+              perl-Sys-Syslog: []
+              perl-LWP-Protocol-https: []
+        mount-ebs:
+          commands:
+            mount1:
+              command: mkfs -t ext4 /dev/xvdf
+            mount2:
+              command: mkdir /app
+            mount3:
+              command: mount /dev/xvdf /app
+            mount4:
+              command: >-
+                echo "/dev/xvdf     /app   ext4    defaults,nofail        0       2"
+                >> /etc/fstab
+        cloudwatch-monitoring-init:
+          commands:
+            0-install-wget:
+              command: sudo yum -y install wget
+            1-CloudWatchScriptDownload:
+              command: >-
+                wget -O /tmp/cloudwatch-monitoring.zip
+                https://ec2-downloads.s3.amazonaws.com/cloudwatch-samples/CloudWatchMonitoringScripts-v1.1.0.zip
+            2-install-unzip:
+              command: sudo yum -y install unzip
+            3-CloudWatchScriptExtration:
+              command: unzip /tmp/cloudwatch-monitoring.zip -d /tmp/
+            4-CronPatternDefinition:
+              command: >-
+                echo '*/5 * * * * /tmp/aws-scripts-mon/mon-put-instance-data.pl
+                --mem-used --mem-avail --swap-used --disk-space-util
+                --disk-space-used --disk-space-avail --disk-path=/
+                --disk-path=/app'  >>/etc/cron.cloudwatch
+            5-CronTabIntegration:
+              command: crontab /etc/cron.cloudwatch
+        setup-docker-ee:
+          commands:
+            0-remove-docker-ee:
+              command: >-
+                sudo yum remove docker-ee \
+                                  docker-common \
+                                  docker-selinx \
+                                  docker-engine-selinux \
+                                  docker-engine
+            1-set-docker-url:
+              command: sudo sh -c 'echo https://storebits.docker.com/ee/trial/sub-782ee8db-e6d6-4643-abc1-b3718dbf0c5c/rhel/ > /etc/yum/vars/dockerurl'
+            2-set-docker-version:
+              command: sudo sh -c 'echo "7.4" > /etc/yum/vars/dockerosversion'
+            3-set-devicemapper:
+              command: sudo yum install -y yum-utils device-mapper-persistent-data lvm2
+            4-set-rpms:
+              command: sudo yum-config-manager --enable rhel-7-server-extras-rpms
+            5-set-extras:
+              command: sudo yum-config-manager --enable rhui-REGION-rhel-server-extras
+            6-add-repo-1-wait:
+              command: sleep 10s
+            6-add-repo:
+              command: >-
+                sudo yum-config-manager \
+                                --add-repo \
+                                https://storebits.docker.com/ee/trial/sub-782ee8db-e6d6-4643-abc1-b3718dbf0c5c/rhel/docker-ee.repo
+            7-make-fast-cache-1-wait:
+              command: sleep 30s
+            7-make-fast-cache:
+              command: sudo yum makecache fast
+            8-install-docker-ee:
+              command: sudo yum -y install docker-ee
+            9-start-docker-service:
+              command: sudo systemctl start docker
+        configure-auto-start:
+          commands:
+            0-set-docker-autostart:
+              command: sudo chkconfig docker on
+    Properties:
+      BlockDeviceMappings:
+      - DeviceName: "/dev/xvdf"
+        Ebs:
+          VolumeSize: !Ref pEC2InstanceRootVolSize
+          VolumeType: 'gp2'
+      ImageId: !Ref pServerAMI
+      InstanceType: !Ref pDockerInstanceType
+      KeyName: !Ref pKeypair
+      InstanceMonitoring: true
+      IamInstanceProfile: !Ref rIAMInstanceProfile
+      PlacementTenancy: !Ref pVPCTenancy
+      AssociatePublicIpAddress: true
+      SecurityGroups:
+        - !Ref pDockerSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Version 1.0
+          # All yum repository scripts require access to the internet via an IGW or NAT.
+          rpm -Uvh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+          yum install -y python-pip
+
+          # Install the files and packages from the metadata
+          /bin/easy_install --script-dir /opt/aws/bin https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          >- cp -f `pip show aws-cfn-bootstrap 2>/dev/null|grep -E "^Location"|awk -F: '{print $2}'`/init/redhat/cfn-hup /etc/init.d/
+          chmod 755 /etc/init.d/cfn-hup
+          chkconfig --add cfn-hup
+          yum update -y aws-cfn-bootstrap
+          # Install the files and packages from the metadata
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource rDockerLaunchConfig --configsets bootstrap --region ${AWS::Region}
+          /opt/aws/bin/cfn-signal -e $? '${dockerWaitHandle}'
+  dockerWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  dockerWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: rDockerLaunchConfig
+    Properties:
+      Handle: !Ref dockerWaitHandle
+      Timeout: '1800'
+      Count: !Ref pDockerDesiredCapacity
+Outputs:
+  rDockerLaunchConfig:
+    Value: !Ref rDockerLaunchConfig
