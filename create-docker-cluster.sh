@@ -7,7 +7,7 @@
 # @author ritesh patel
 # @email ritesh@line89.com
 # @date 10/09/2017
-# Note: Modify TEMPLATE parameter with the location of your template file (line 18)
+# Note: Modify TEMPLATE parameter with the location of your template file (line 19)
 ################################################################################
 # AWS profile from .credentials
 PROFILE='raptest'
