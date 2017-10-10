@@ -4,7 +4,7 @@ Author: Ritesh Patel | Last Updated: Oct 11, 2017
 
 ## Overview
 
-This guide supports the access, management, and deployment of the Docker EE Cluster from CloudFormation templates in Amazon Web Services
+This guide supports the access, management, and deployment of the Docker EE Cluster from CloudFormation templates in Amazon Web Services. Clustered nodes are spun up using AutoScaling Group.
 
 ## Getting Started
 
